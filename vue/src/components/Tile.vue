@@ -1,8 +1,9 @@
 <template>
-  <span
-      class="game__tile"
-      :class="tileClass"
-  >
+<span
+    class="game__tile"
+    :class="tileClass"
+    :style="tileStyle"
+>
     {{ formattedValue }}
   </span>
 </template>
@@ -19,21 +20,45 @@ export default {
       type: String,
       required: true,
     },
+    fromRow: Number,
+    fromCol: Number,
+    toRow: Number,
+    toCol: Number,
+    animate: Boolean,
+    isNew: Boolean
   },
   computed: {
     tileClass() {
-      if (this.tile === 0) {
-        return 'game__tile--0';
-      }
+      if (this.tile === 0) return 'game__tile--0';
       let baseValue = this.tile;
-      while (baseValue > 2048) {
-        baseValue /= 1024;
-      }
+      while (baseValue > 2048) baseValue /= 1024;
       const powersOfTwo = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
       const closestPowerOfTwo = powersOfTwo.find((power) => power >= baseValue) || 2048;
       return `game__tile--${closestPowerOfTwo}`;
     },
+    tileStyle() {
+      const style = {};
+      if (this.animate && this.fromRow !== undefined) {
+        style.transform = `translate(${(this.toCol - this.fromCol) * 100}%, ${(this.toRow - this.fromRow) * 100}%)`;
+        style.transition = 'transform 0.1s ease-out';
+        style.zIndex = 1;
+      }
+      if (this.isNew) {
+        style.animation = 'appear 0.15s ease-out forwards';
+        style.opacity = '0';
+        style.transform = 'scale(0.8)';
+      }
+      return style;
+    },
   },
+  //попробовать заменить watch
+  watch: {
+    toRow() {
+      setTimeout(() => {
+        this.$emit('animation-end');
+      }, 150);
+    }
+  }
 };
 </script>
 
@@ -46,12 +71,13 @@ export default {
   border-radius: 5px;
   aspect-ratio: 1;
   font-weight: bold;
-  transition: transform 0.1s ease, background-color 0.3s ease;
+  transition: transform 0.07s ease, background-color 0.3s ease;
   text-align: center;
   width: 100%;
   height: 100%;
   box-sizing: border-box;
   font-size: 14px;
+  will-change: transform;
 
 
   &:hover {
@@ -60,6 +86,16 @@ export default {
 
   @media (max-width: 400px) {
     font-size: clamp(10px, 3vw, 18px);
+  }
+  @keyframes appear {
+    0% {
+      opacity: 0;
+      transform: scale(0.5);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 
   &--0 {

@@ -53,20 +53,26 @@
       <div class="game__grid" :style="gridStyle">
         <GameTile
             v-for="(cell, index) in getFormattedCells"
-            :key="index"
+            :key="`tile-${index}-${getCells[index]}-${animationData[index] ? 'moving' : 'static'}`"
             :tile="getCells[index]"
             :formattedValue="cell"
             :style="tilePositions[index]"
+            :from-row="animationData[index]?.fromRow"
+            :from-col="animationData[index]?.fromCol"
+            :to-row="Math.floor(index / getGridSize)"
+            :to-col="index % getGridSize"
+            :animate="!!getTileAnimationData(index)"
+            @animation-end="()=>handleAnimationEnd()"
         />
       </div>
     </div>
   </div>
 </template>
 
-
 <script>
-import { mapGetters, mapActions } from 'vuex';
+import {mapGetters, mapActions} from 'vuex';
 import GameTile from '@/components/Tile.vue';
+import {KEY_MAP} from "@/utils/keyMap";
 
 export default {
   name: 'HomePage',
@@ -81,6 +87,7 @@ export default {
       'canUndo',
       'getFormattedCells',
       'getGridSize',
+      'getTileAnimationData',
     ]),
     gridStyle() {
       const gridSize = this.getGridSize;
@@ -91,14 +98,10 @@ export default {
     },
     tilePositions() {
       const gridSize = this.getGridSize;
-      return this.getCells.map((_, index) => {
-        const row = Math.floor(index / gridSize);
-        const col = index % gridSize;
-        return {
-          gridRow: row + 1,
-          gridColumn: col + 1,
-        };
-      });
+      return this.getCells.map((_, index) => ({
+        gridRow: Math.floor(index / gridSize) + 1,
+        gridColumn: (index % gridSize) + 1
+      }));
     },
   },
   mounted() {
@@ -120,11 +123,6 @@ export default {
       this.restartGameWithGridSize(this.selectedGridSize);
       this.restartGame();
     },
-
-    handleKeyDown(event) {
-      event.preventDefault();
-      this.moveByKeyEvent(event);
-    },
     handleFocus() {
       this.setFocus(true);
     },
@@ -139,11 +137,28 @@ export default {
         this.undoMove();
       }
     },
+    handleAnimationEnd() {
+      this.animationData = {};
+      this.animating = false;
+      this.$forceUpdate();
+    },
+    //сырой, переделать в будущем
+    async handleKeyDown(event) {
+      if (this.isAnimating) {
+        event.preventDefault();
+        return;
+      }
+      const direction = KEY_MAP[event.key];
+      if (!direction) return;
+      await this.moveByKeyEvent(event);
+    },
   },
   data() {
     return {
       selectedGridSize: 4,
       gridSizes: [4, 5, 6, 7, 8, 9, 10],
+      animationData: {},
+      animating: false
     };
   },
 };

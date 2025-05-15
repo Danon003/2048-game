@@ -9,6 +9,8 @@ const initialState = (gridSize = 4) => ({
     victory: false,
     previousState: null,
     victoryModalShown: false,
+    isAnimating: false,
+    movedTiles: []
 });
 
 export default {
@@ -50,8 +52,32 @@ export default {
             };
             return state.cells.map((cell) => formatCellValue(cell));
         },
+        getTileAnimationData: (state) => (index) => {
+            if (!state.movedTiles) {
+                return null;
+            }
+            const move = state.movedTiles.find(m => m.from === index);
+            if (!move) {
+                return null;
+            }
+            const gridSize = state.gridSize;
+            return {
+                fromRow: Math.floor(move.from / gridSize),
+                fromCol: move.from % gridSize,
+                newIndex: move.to
+            };
+        },
     },
     mutations: {
+        SET_ANIMATING(state, status) {
+            state.isAnimating = status;
+        },
+        SET_MOVED_TILES(state, tiles) {
+            state.movedTiles = tiles;
+        },
+        SET_LAST_ACTION(state, action) {
+            state.lastAction = action;
+        },
         SET_GRID_SIZE: (state, size) => {
             state.gridSize = size;
             state.cells = Array(size * size).fill(0);
@@ -178,16 +204,17 @@ export default {
                 { root: true }
             );
         },
-        addRandomTile: ({ state, commit }) => {
+        async addRandomTile({ state, commit }) {
             const emptyCells = state.cells
                 .map((value, index) => (value === 0 ? index : -1))
-                .filter((index) => index !== -1);
+                .filter(index => index !== -1);
             if (emptyCells.length > 0) {
                 const index = emptyCells[Math.floor(Math.random() * emptyCells.length)];
                 const newValue = [2, 4][Math.floor(Math.random() * 2)];
                 const newCells = [...state.cells];
                 newCells[index] = newValue;
                 commit('SET_CELLS', newCells);
+                commit('SET_LAST_ACTION', { type: 'ADD_TILE', index });
             }
         },
         addSpecificTiles: ({ state, commit }) => { //отладочный элемент (снесётся в дальнейшем)
@@ -202,37 +229,59 @@ export default {
                 commit('SET_CELLS', cells);
             }
         },
-        move: ({ dispatch, state, commit }, direction) => {
+
+        async move({ dispatch, state, commit }, direction) {
+            commit('SET_ANIMATING', true);
+
             const previousCells = [...state.cells];
             const previousScore = state.score;
+            const gridSize = state.gridSize;
+
             let cells = [...state.cells];
             let scoreIncrease = 0;
-            const gridSize = state.gridSize;
+            let movedTiles = [];
+
             switch (direction) {
                 case KEY_MAP.ArrowLeft:
-                    ({ cells, scoreIncrease } = processMove(cells, 'left', moveRow, gridSize));
+                    ({ cells, scoreIncrease, movedTiles } = processMove(cells, 'left', moveRow, gridSize));
                     break;
                 case KEY_MAP.ArrowRight:
-                    ({ cells, scoreIncrease } = processMove(cells, 'right', moveRow, gridSize));
+                    ({ cells, scoreIncrease, movedTiles } = processMove(cells, 'right', moveRow, gridSize));
                     break;
                 case KEY_MAP.ArrowUp:
-                    ({ cells, scoreIncrease } = processMove(cells, 'up', moveColumn, gridSize));
+                    ({ cells, scoreIncrease, movedTiles } = processMove(cells, 'up', moveColumn, gridSize));
                     break;
                 case KEY_MAP.ArrowDown:
-                    ({ cells, scoreIncrease } = processMove(cells, 'down', moveColumn, gridSize));
+                    ({ cells, scoreIncrease, movedTiles } = processMove(cells, 'down', moveColumn, gridSize));
                     break;
                 default:
-                    console.error(`Unknown direction: ${direction}`);
+                    commit('SET_ANIMATING', false);
+                    return;
             }
-            if (JSON.stringify(previousCells) !== JSON.stringify(cells) || previousScore !== state.score + scoreIncrease) {
-                commit('SAVE_PREVIOUS_STATE');
+            if (JSON.stringify(previousCells) !== JSON.stringify(cells)) {
+                commit('SAVE_PREVIOUS_STATE', {
+                    cells: previousCells,
+                    score: previousScore
+                });
                 commit('SET_CELLS', cells);
                 if (scoreIncrease > 0) {
                     commit('ADD_SCORE', scoreIncrease);
                 }
-                dispatch('addRandomTile');
+
+                await Promise.all([
+                    dispatch('animateMovement', { movedTiles }),
+                    new Promise(resolve => setTimeout(() => {
+                        dispatch('addRandomTile').then(resolve);
+                    }, 30))
+                ]);
                 dispatch('checkGameState');
             }
+            commit('SET_ANIMATING', false);
+        },
+
+        async animateMovement({ commit }, { movedTiles }) {
+            commit('SET_MOVED_TILES', movedTiles);
+            return new Promise(resolve => setTimeout(resolve, 100));
         },
         setFocus: ({ commit }, status) => {
             commit('SET_FOCUS', status);
@@ -250,9 +299,11 @@ export default {
 };
 
 const compressAndMerge = (array, direction, gridSize) => {
-    const sanitizedArray = array.map((cell) => (typeof cell === 'number' ? cell : 0));
-    const compressed = sanitizedArray.filter((cell) => cell !== 0);
+    const sanitizedArray = array.map(cell => (typeof cell === 'number' ? cell : 0));
+    const compressed = sanitizedArray.filter(cell => cell !== 0);
     let scoreIncrease = 0;
+    const movements = [];
+
     if (direction === 'right' || direction === 'down') {
         compressed.reverse();
     }
@@ -260,6 +311,11 @@ const compressAndMerge = (array, direction, gridSize) => {
         if (compressed[i] === compressed[i + 1]) {
             compressed[i] *= 2;
             scoreIncrease += compressed[i];
+            movements.push({
+                from: i + 1,
+                to: i,
+                value: compressed[i]
+            });
             compressed.splice(i + 1, 1);
             i--;
         }
@@ -269,43 +325,92 @@ const compressAndMerge = (array, direction, gridSize) => {
     }
     if (direction === 'right' || direction === 'down') {
         compressed.reverse();
+        movements.forEach(move => {
+            move.from = gridSize - 1 - move.from;
+            move.to = gridSize - 1 - move.to;
+        });
     }
-    return { compressed, scoreIncrease };
+    const nonZeroIndices = [];
+    array.forEach((cell, index) => {
+        if (cell !== 0) nonZeroIndices.push(index);
+    });
+    compressed.forEach((cell, newIndex) => {
+        if (cell !== 0) {
+            const originalIndex = array.indexOf(cell, nonZeroIndices[newIndex] || 0);
+            if (originalIndex !== -1 && originalIndex !== newIndex) {
+                movements.push({
+                    from: originalIndex,
+                    to: newIndex,
+                    value: cell
+                });
+            }
+        }
+    });
+    return {
+        compressed,
+        scoreIncrease,
+        movements
+    };
 };
 const moveRow = (cells, direction, gridSize) => {
     let moved = false;
     let totalScoreIncrease = 0;
+    const movedTiles = [];
+
     for (let row = 0; row < gridSize; row++) {
         const start = row * gridSize;
         const end = start + gridSize;
         const currentRow = cells.slice(start, end);
-        const { compressed, scoreIncrease } = compressAndMerge(currentRow, direction, gridSize);
+        const { compressed, scoreIncrease, movements } = compressAndMerge(currentRow, direction, gridSize);
+
         if (JSON.stringify(currentRow) !== JSON.stringify(compressed)) {
             cells.splice(start, gridSize, ...compressed);
             moved = true;
             totalScoreIncrease += scoreIncrease;
+            movements.forEach(movement => {
+                movedTiles.push({
+                    from: start + movement.from,
+                    to: start + movement.to,
+                    value: movement.value
+                });
+            });
         }
     }
-    return { cells, moved, scoreIncrease: totalScoreIncrease };
+    return { cells, moved, scoreIncrease: totalScoreIncrease, movedTiles };
 };
 const moveColumn = (cells, direction, gridSize) => {
     let moved = false;
     let totalScoreIncrease = 0;
+    const movedTiles = [];
+
     for (let col = 0; col < gridSize; col++) {
         const column = [];
+        // Собираем колонку
         for (let i = 0; i < gridSize; i++) {
             column.push(cells[col + i * gridSize]);
         }
-        const { compressed, scoreIncrease } = compressAndMerge(column, direction, gridSize);
+        const { compressed, scoreIncrease, movements } = compressAndMerge(column, direction, gridSize);
         if (JSON.stringify(column) !== JSON.stringify(compressed)) {
             for (let i = 0; i < gridSize; i++) {
                 cells[col + i * gridSize] = compressed[i];
             }
             moved = true;
             totalScoreIncrease += scoreIncrease;
+            movements.forEach(movement => {
+                movedTiles.push({
+                    from: col + movement.from * gridSize,
+                    to: col + movement.to * gridSize,
+                    value: movement.value
+                });
+            });
         }
     }
-    return { cells, moved, scoreIncrease: totalScoreIncrease };
+    return {
+        cells,
+        moved,
+        scoreIncrease: totalScoreIncrease,
+        movedTiles
+    };
 };
 const processMove = (cells, direction, moveFunction, gridSize) => {
     const result = moveFunction(cells, direction, gridSize);
